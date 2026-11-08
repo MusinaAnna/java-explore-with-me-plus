@@ -25,6 +25,24 @@ function Http200([string]$Url) {
     Stop-Check "Failed HTTP request to $Url : $last"
 }
 
+function Http404([string]$Url) {
+    $code = 0
+    try {
+        $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+        $code = [int]$r.StatusCode
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response) {
+            Stop-Check "Failed HTTP request to $Url : $($_.Exception.Message)"
+        }
+        $code = [int]$response.StatusCode
+    }
+    if ($code -ne 404) {
+        Stop-Check "Unexpected route exposure: $Url returned HTTP $code (expected 404)."
+    }
+    Write-Host "PASS HTTP 404 (not routed): $Url" -ForegroundColor Green
+}
+
 function Registry() {
     $r = Invoke-WebRequest -Uri 'http://localhost:8761/eureka/apps' -UseBasicParsing -Headers @{ Accept='application/json' } -TimeoutSec 10
     return ($r.Content | ConvertFrom-Json)
@@ -106,6 +124,9 @@ try {
         $expected = if ($name -eq 'gateway-server') { '8080' } else { '0' }
         if ($port -ne $expected) { Stop-Check "Unexpected Config Server port for $name : $port (expected $expected)." }
         if ($name -eq 'gateway-server') {
+            if ((ConfigProp $config 'spring.cloud.gateway.discovery.locator.enabled') -ne 'false') {
+                Stop-Check 'Automatic Eureka routes must be disabled in Gateway.'
+            }
             if ((ConfigProp $config 'spring.cloud.gateway.routes[0].uri') -ne 'lb://main-service') {
                 Stop-Check 'Gateway route to lb://main-service is missing in Config Server.'
             }
@@ -120,6 +141,9 @@ try {
     Http200 'http://localhost:8080/actuator/health'
     Http200 'http://localhost:8080/categories'
     Http200 'http://localhost:8080/events'
+    Http404 'http://localhost:8080/config-server/actuator/health'
+    Http404 'http://localhost:8080/stats-server/actuator/health'
+    Http404 'http://localhost:8080/gateway-server/actuator/health'
     Write-Host 'PASS: Stage 1 smoke checks (Eureka, Config Server, Gateway) completed.' -ForegroundColor Green
 } catch {
     Stop-Check $_.Exception.Message
